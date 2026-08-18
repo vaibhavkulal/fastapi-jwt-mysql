@@ -255,7 +255,155 @@ The test suite uses an isolated SQLite test database.
 4. Update schemas or routes if needed
 5. Run tests
 
-## 10. Notes
+## 10. Git workflow
+
+The `main` branch is the protected production branch. **Do not make changes directly on `main`.**
+
+Every feature or fix should be developed in its own branch and merged through a Pull Request.
+
+### Create a feature branch
+
+First make sure your local `main` is up to date:
+
+```powershell
+git checkout main
+git pull origin main
+```
+
+Create a feature branch:
+
+```powershell
+git checkout -b feature/<short-description>
+```
+
+Examples:
+
+```powershell
+git checkout -b feature/logout
+```
+
+```powershell
+git checkout -b feature/password-validation
+```
+
+### Make your changes
+
+Implement the task and test it locally.
+
+Check your changes:
+
+```powershell
+git status
+git diff
+```
+
+Run tests:
+
+```powershell
+pytest -q
+```
+
+### Commit your changes
+
+Use a clear commit message:
+
+```powershell
+git add .
+git commit -m "feat: add logout"
+```
+
+### Push the feature branch
+
+```powershell
+git push -u origin feature/logout
+```
+
+### Create a Pull Request
+
+After pushing the branch:
+
+1. Open the GitHub repository.
+2. GitHub will show an option to create a Pull Request for the pushed branch.
+3. Set the base branch to `main`.
+4. Add a clear PR title and description.
+5. Link the related GitHub issue, for example `Closes #14`.
+6. Submit the Pull Request.
+
+Example PR title:
+
+```text
+feat: add logout and token invalidation
+```
+
+### Pull Request checklist
+
+Before merging, verify:
+
+- [ ] Code is complete
+- [ ] Tests pass
+- [ ] No `.env` or secrets are committed
+- [ ] Alembic migration is included if the database changed
+- [ ] PR description explains the change
+- [ ] Related issue is linked
+
+### Merge the Pull Request
+
+Only merge the PR into `main` after the changes have been reviewed and checks have passed.
+
+After merging:
+
+```powershell
+git checkout main
+git pull origin main
+git branch -d feature/logout
+```
+
+The feature branch can also be deleted from GitHub after the PR is merged.
+
+### Branch workflow
+
+```text
+main
+ │
+ ├── feature/logout
+ │       │
+ │       ├── code changes
+ │       ├── tests
+ │       └── push
+ │              │
+ │              ▼
+ │         Pull Request
+ │              │
+ │         review + checks
+ │              │
+ │              ▼
+ │            main
+```
+
+### Recommended branch names
+
+Use a small, descriptive prefix:
+
+```text
+feature/<name>     # New functionality
+fix/<name>         # Bug fix
+refactor/<name>    # Code refactoring
+test/<name>        # Tests
+chore/<name>       # Maintenance/documentation
+```
+
+Examples:
+
+```text
+feature/logout
+feature/refresh-token
+fix/login-validation
+refactor/auth-service
+test/authentication
+chore/update-readme
+```
+
+## 11. Notes
 
 - Docker is intentionally not part of this project.
 - Do not edit the database schema manually.
