@@ -405,7 +405,6 @@ chore/update-readme
 
 ## 11. Notes
 
-- Docker is intentionally not part of this project.
 - Do not edit the database schema manually.
 - Use Alembic for every schema change.
 - The project currently runs on the existing Python environment in `venv`.
@@ -431,4 +430,4 @@ pytest -q
 - Alembic setup: done
 - First migration: done
 - Schemas, auth, JWT, CRUD, roles, and tests: done
-- Docker: skipped by request
+
