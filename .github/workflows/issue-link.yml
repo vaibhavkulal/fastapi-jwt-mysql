@@ -3,7 +3,7 @@ name: Related Issue Detection
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -22,39 +22,180 @@ jobs:
             const pr = context.payload.pull_request;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            if (pr.head.repo.full_name !== `${owner}/${repo}`) return;
+            const fullName = `${owner}/${repo}`;
 
-            const normalize = text => (text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-            const tokens = text => new Set(normalize(text).split(' ').filter(w => w.length >= 4));
-            const prText = `${pr.title} ${pr.body || ''}`;
-            const prTokens = tokens(prText);
-            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
-            const paths = files.map(f => f.filename.toLowerCase());
-            const issues = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', per_page: 100 });
+            // Never inspect or modify fork PRs.
+            if (pr.head.repo?.full_name !== fullName) {
+              core.info('Fork PR detected; skipping automatic issue linking.');
+              return;
+            }
+
+            const normalize = text => (text || '')
+              .toLowerCase()
+              .replace(/[^a-z0-9\s]/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+
+            const stopWords = new Set([
+              'this','that','with','from','into','have','has','will','should','could','would',
+              'when','where','what','which','test','tests','verify','change','changes','added',
+              'add','update','updated','fix','fixed','feature','automation','pull','request','the',
+              'and','for','are','was','were','current','automatic','automatically'
+            ]);
+
+            const stem = word => {
+              let w = word;
+              for (const suffix of ['ies','ing','ed','es','s']) {
+                if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
+                  w = w.slice(0, -suffix.length);
+                  break;
+                }
+              }
+              return w;
+            };
+
+            const words = text => normalize(text)
+              .split(' ')
+              .filter(w => w.length >= 3 && !stopWords.has(w))
+              .map(stem);
+
+            const prFiles = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number: pr.number, per_page: 100 }
+            );
+
+            const changedPaths = prFiles.map(f => f.filename.toLowerCase());
+            let changedContent = '';
+
+            // Read the PR head version of changed text files so matching can use
+            // actual implementation/documentation content, not only filenames.
+            for (const file of prFiles) {
+              if (file.status === 'removed' || file.filename.endsWith('.lock')) continue;
+              if (file.changes > 2000) continue;
+
+              try {
+                const response = await github.rest.repos.getContent({
+                  owner,
+                  repo,
+                  path: file.filename,
+                  ref: pr.head.sha
+                });
+
+                if (!Array.isArray(response.data) && response.data.encoding === 'base64') {
+                  changedContent += `\n${file.filename}\n${Buffer.from(response.data.content, 'base64').toString('utf8').slice(0, 12000)}`;
+                }
+              } catch (error) {
+                core.info(`Could not read ${file.filename}; skipping its content.`);
+              }
+            }
+
+            const prTitleTokens = words(pr.title);
+            const prBodyTokens = words(pr.body || '');
+            const pathTokens = words(changedPaths.join(' '));
+            const contentTokens = words(changedContent);
+            const allPrTokens = new Set([...prTitleTokens, ...prBodyTokens, ...pathTokens, ...contentTokens]);
+
+            const issues = await github.paginate(
+              github.rest.issues.listForRepo,
+              { owner, repo, state: 'open', per_page: 100, sort: 'updated', direction: 'desc' }
+            );
 
             const matches = [];
+
             for (const issue of issues) {
               if (issue.pull_request) continue;
-              const issueTokens = tokens(`${issue.title} ${issue.body || ''}`);
-              let common = 0;
-              for (const word of issueTokens) if (prTokens.has(word)) common++;
-              const issueText = normalize(`${issue.title} ${issue.body || ''}`);
-              const fileHints = paths.filter(p => issueText.split(/\s+/).some(word => word.length >= 5 && p.includes(word))).length;
-              const score = common + fileHints * 2;
-              if (score >= 2) matches.push({ issue, score });
-            }
-            matches.sort((a,b) => b.score - a.score);
-            const top = matches.slice(0, 5);
-            const marker = '<!-- automated-related-issues -->';
-            let body = `${marker}\n## 🔗 Related Issues\n\n`;
-            if (top.length === 0) {
-              body += 'No existing open issue was confidently matched to the current PR changes.\n';
-            } else {
-              body += top.map(m => `- #${m.issue.number} — ${m.issue.title}`).join('\n');
-              body += '\n\n> These are automated suggestions based on PR title/description and changed file paths. Please verify relevance before linking or closing issues.';
+
+              const titleTokens = words(issue.title);
+              const issueTokens = words(`${issue.title}\n${issue.body || ''}`);
+              const issueSet = new Set(issueTokens);
+
+              let titleMatches = 0;
+              let bodyMatches = 0;
+              let pathMatches = 0;
+              let contentMatches = 0;
+
+              for (const token of titleTokens) {
+                if (new Set(prTitleTokens).has(token)) titleMatches++;
+              }
+
+              for (const token of words(issue.body || '')) {
+                if (new Set(prBodyTokens).has(token)) bodyMatches++;
+              }
+
+              for (const token of issueSet) {
+                if (token.length >= 4 && pathTokens.includes(token)) pathMatches++;
+                if (token.length >= 4 && contentTokens.includes(token)) contentMatches++;
+              }
+
+              // Title overlap is strongest, then changed content/path relevance.
+              const score = (titleMatches * 5) + (bodyMatches * 2) + (pathMatches * 3) + contentMatches;
+
+              // At least two meaningful issue-title terms must be present in the
+              // PR context, OR a strong path/content combination must exist.
+              const strongTitleMatch = titleMatches >= 2;
+              const strongImplementationMatch = (pathMatches >= 1 && contentMatches >= 3);
+
+              if (score >= 8 && (strongTitleMatch || strongImplementationMatch)) {
+                matches.push({ issue, score, titleMatches, bodyMatches, pathMatches, contentMatches });
+              }
             }
 
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pr.number, per_page: 100 });
-            const existing = comments.find(c => c.user.type === 'Bot' && c.body?.includes(marker));
-            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-            else await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
+            matches.sort((a, b) => b.score - a.score);
+            const top = matches.slice(0, 3);
+
+            // Maintain one bot-managed PR-body section. GitHub renders #31 as a
+            // clickable issue reference even though the author did not type #31.
+            const bodyMarker = '<!-- automated-related-issues-links -->';
+            const currentBody = pr.body || '';
+            const cleanedBody = currentBody.replace(new RegExp(`\\n?${bodyMarker}[\\s\\S]*$`), '').trimEnd();
+
+            let updatedBody = cleanedBody;
+            if (top.length > 0) {
+              const links = top.map(m => `- #${m.issue.number} — ${m.issue.title}`).join('\n');
+              updatedBody += `\n\n${bodyMarker}\n### 🔗 Automatically detected related issues\n\n${links}\n\n> Detected from the PR title, description, changed file paths, and changed file content.`;
+            }
+
+            if (updatedBody !== currentBody) {
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pr.number,
+                body: updatedBody
+              });
+            }
+
+            const commentMarker = '<!-- automated-related-issues-comment -->';
+            let commentBody = `${commentMarker}\n## 🔗 Related Issues\n\n`;
+            if (top.length === 0) {
+              commentBody += 'No existing open issue was confidently matched to the current PR changes.\n';
+            } else {
+              commentBody += top.map(m =>
+                `- #${m.issue.number} — ${m.issue.title} (**score ${m.score}**; title ${m.titleMatches}, body ${m.bodyMatches}, path ${m.pathMatches}, content ${m.contentMatches})`
+              ).join('\n');
+              commentBody += '\n\n> Matching uses the PR title, description, changed file paths, and changed file content. Fork PRs are skipped for safety.';
+            }
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: pr.number, per_page: 100 }
+            );
+
+            const existing = comments.find(c =>
+              c.user?.type === 'Bot' && c.body?.includes(commentMarker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body: commentBody
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body: commentBody
+              });
+            }
