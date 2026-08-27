@@ -1,0 +1,48 @@
+name: PR Size Labels
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Calculate and apply PR size
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            if (pr.head.repo.full_name !== `${owner}/${repo}`) {
+              core.info('Fork PR detected; skipping size labels.');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: pr.number, per_page: 100
+            });
+            const changed = files.reduce((sum, file) => sum + (file.additions || 0) + (file.deletions || 0), 0);
+            const size = changed <= 10 ? 'XS' : changed <= 50 ? 'S' : changed <= 200 ? 'M' : changed <= 500 ? 'L' : 'XL';
+            const names = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+
+            for (const name of names) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name }); }
+              catch (e) { if (e.status !== 404) throw e; }
+            }
+
+            const label = `size/${size}`;
+            try { await github.rest.issues.getLabel({ owner, repo, name: label }); }
+            catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.issues.createLabel({ owner, repo, name: label, color: 'ededed', description: `Automatic PR size: ${size}` });
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: [label] });
+            core.info(`PR #${pr.number}: ${changed} changed lines -> ${label}`);

@@ -1,0 +1,60 @@
+name: Related Issue Detection
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  related-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find and report related issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            if (pr.head.repo.full_name !== `${owner}/${repo}`) return;
+
+            const normalize = text => (text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+            const tokens = text => new Set(normalize(text).split(' ').filter(w => w.length >= 4));
+            const prText = `${pr.title} ${pr.body || ''}`;
+            const prTokens = tokens(prText);
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 });
+            const paths = files.map(f => f.filename.toLowerCase());
+            const issues = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', per_page: 100 });
+
+            const matches = [];
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              const issueTokens = tokens(`${issue.title} ${issue.body || ''}`);
+              let common = 0;
+              for (const word of issueTokens) if (prTokens.has(word)) common++;
+              const issueText = normalize(`${issue.title} ${issue.body || ''}`);
+              const fileHints = paths.filter(p => issueText.split(/\s+/).some(word => word.length >= 5 && p.includes(word))).length;
+              const score = common + fileHints * 2;
+              if (score >= 2) matches.push({ issue, score });
+            }
+            matches.sort((a,b) => b.score - a.score);
+            const top = matches.slice(0, 5);
+            const marker = '<!-- automated-related-issues -->';
+            let body = `${marker}\n## 🔗 Related Issues\n\n`;
+            if (top.length === 0) {
+              body += 'No existing open issue was confidently matched to the current PR changes.\n';
+            } else {
+              body += top.map(m => `- #${m.issue.number} — ${m.issue.title}`).join('\n');
+              body += '\n\n> These are automated suggestions based on PR title/description and changed file paths. Please verify relevance before linking or closing issues.';
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pr.number, per_page: 100 });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body?.includes(marker));
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
