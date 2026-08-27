@@ -2,6 +2,18 @@
 
 A local-only FastAPI project that uses SQLAlchemy, Alembic, and MySQL to build authentication and user management features.
 
+## Documentation
+
+Detailed project documentation is maintained under [`docs/`](docs/):
+
+- [Project Overview](docs/PROJECT.md) — what the project is, why it exists, goals, and scope.
+- [Architecture](docs/ARCHITECTURE.md) — application structure and authentication flow.
+- [Features](docs/FEATURES.md) — current application capabilities.
+- [API Reference](docs/API.md) — endpoint overview and API documentation.
+- [Database](docs/DATABASE.md) — MySQL, SQLAlchemy, and Alembic guidance.
+- [Development Guide](docs/DEVELOPMENT.md) — branches, Pull Requests, testing, and development rules.
+- [Changelog](docs/CHANGELOG.md) — tracked project changes and automated PR documentation.
+
 ## What is included
 
 - FastAPI application
@@ -27,6 +39,7 @@ fastapi-jwt-mysql/
 │   ├── database.py
 │   └── main.py
 ├── alembic/
+├── docs/
 ├── tests/
 ├── .env
 ├── .env.example
@@ -430,4 +443,3 @@ pytest -q
 - Alembic setup: done
 - First migration: done
 - Schemas, auth, JWT, CRUD, roles, and tests: done
-
