@@ -53,8 +53,30 @@ jobs:
             if (paths.some(p => p.startsWith('app/routers/'))) labels.add('api');
             if (paths.some(p => p.startsWith('tests/'))) labels.add('tests');
 
-            const allowed = new Set(['feature','bug','refactor','tests','documentation','chore','ci','database','api']);
-            const finalLabels = [...labels].filter(x => allowed.has(x));
+            const labelColors = {
+              feature: '1d76db',
+              bug: 'd73a4a',
+              refactor: '5319e7',
+              tests: '0e8a16',
+              documentation: '0075ca',
+              chore: '6f42c1',
+              ci: 'fbca04',
+              database: 'b60205',
+              api: '0052cc'
+            };
+
+            const finalLabels = [...labels].filter(name => labelColors[name]);
+            for (const name of finalLabels) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner, repo, name, color: labelColors[name],
+                  description: `Automatically managed ${name} PR label`
+                });
+              }
+            }
             await github.rest.issues.setLabels({ owner, repo, issue_number: pr.number, labels: finalLabels });
 
             await github.rest.issues.addAssignees({
